@@ -31,8 +31,8 @@ pnpm-debug.*
 output.txt
 
 # editor caches
-.vscode/.ropeproject/
-.idea/workspace.xml
+.vscode/
+.idea/
 
 # macOS
 .DS_Store
