@@ -1,6 +1,5 @@
-// context/auth-context.tsx
-import { getSession, setSession } from '@/database/session';
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { getSession, logoutUser, setSession } from '@/database/session';
+import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 
 type Role = 'admin' | 'student';
 
@@ -29,47 +28,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ready: true,
       };
     } catch (error) {
-      console.error('Erreur lecture session SQLite :', error);
+      console.error('❌ Erreur lecture session SQLite:', error);
       return { userId: null, role: null, isAuthenticated: false, ready: true };
     }
   });
 
-  // Verrou anti-réentrance (appels multiples rapides)
-  const isLoggingOutRef = useRef(false);
-
   const login = useCallback((userId: string, role: Role) => {
     try {
+      console.log('✅ Connexion:', { userId, role });
       setSession(userId, role);
+      setState({ userId, role, isAuthenticated: true, ready: true });
     } catch (error) {
-      console.error('Erreur écriture session :', error);
-    }
-    setState({ userId, role, isAuthenticated: true, ready: true });
-  }, [state]);
-
-  const logout = useCallback(() => {
-    if (isLoggingOutRef.current) return;
-    isLoggingOutRef.current = true;
-
-    console.log('[AUTH/logout:start]', { ts: Date.now(), userId: state.userId, role: state.role, ready: state.ready });
-    console.trace('[AUTH/logout:trace]');
-
-    try {
-      // logoutUser();
-    } catch (error) {
-      console.error('Erreur logout SQLite :', error);
-    } finally {
-      // ✅ On ne navigue PAS ici. Le RootNavigator réagit à ce changement d'état.
-      console.log('[AUTH/logout:state_before_update]');
-      setState({ userId: null, role: null, isAuthenticated: false, ready: true });
-      console.log('[AUTH/logout:state_after_update]');
-      isLoggingOutRef.current = false;
+      console.error('❌ Erreur écriture session:', error);
     }
   }, []);
 
-  const value = useMemo<AuthContextValue>(
-    () => ({ ...state, login, logout }),
-    [state, login, logout]
-  );
+  const logout = useCallback(() => {
+    console.log('🚪 Déconnexion');
+    try {
+      logoutUser();
+    } catch (error) {
+      console.error('❌ Erreur logout SQLite:', error);
+    } finally {
+      setState({ userId: null, role: null, isAuthenticated: false, ready: true });
+    }
+  }, []);
+
+  const value = useMemo(() => ({ ...state, login, logout }), [state, login, logout]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

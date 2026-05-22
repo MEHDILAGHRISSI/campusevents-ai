@@ -1,3 +1,4 @@
+// database/init.ts
 import * as SQLite from 'expo-sqlite';
 
 import { demoUsers } from '@/constants/users';
@@ -144,4 +145,45 @@ export function mapRowToEvent(row: Record<string, unknown>): EventRecord {
     tags: typeof row.tags === 'string' ? JSON.parse(String(row.tags)) : [],
     createdAt: String(row.createdAt),
   };
+}
+
+export function resetDatabase() {
+  database.execSync('BEGIN;');
+  try {
+    database.runSync('DELETE FROM favorites;');
+    database.runSync('DELETE FROM registrations;');
+    database.runSync('DELETE FROM events;');
+
+    const now = new Date().toISOString();
+    for (const event of seedEvents) {
+      database.runSync(
+        `INSERT INTO events (
+          id, title, description, category, startDateTime, endDateTime,
+          locationName, locationAddress, organizerName, capacity, registeredCount,
+          imageUrl, tags, createdAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        [
+          event.id,
+          event.title,
+          event.description,
+          event.category,
+          event.startDateTime,
+          event.endDateTime ?? null,
+          event.locationName,
+          event.locationAddress ?? null,
+          event.organizerName,
+          event.capacity ?? null,
+          event.registeredCount,
+          event.imageUrl ?? null,
+          JSON.stringify(event.tags ?? []),
+          event.createdAt ?? now,
+        ]
+      );
+    }
+
+    database.execSync('COMMIT;');
+  } catch (err) {
+    database.execSync('ROLLBACK;');
+    throw err;
+  }
 }

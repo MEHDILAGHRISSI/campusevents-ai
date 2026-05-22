@@ -1,6 +1,6 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AppButton, AppInput, Card, HelperText, Pill, Screen, SectionTitle } from '@/components/ui-kit';
 import { createEvent, getEventById, updateEvent } from '@/database/events';
@@ -52,7 +52,9 @@ export default function EventFormScreen() {
   const [capacity, setCapacity] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [tags, setTags] = useState('');
-  const [error, setError] = useState<string | null>(null);;
+  const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<{ endDateTime?: string; capacity?: string }>({});
+  const [success, setSuccess] = useState(false);
 
   useEffect(() => {
     if (!eventId) {
@@ -84,22 +86,31 @@ export default function EventFormScreen() {
 
   function validate() {
     // ✅ FIXED: Using centralized validation utilities
+    const parsedCapacityForValidation = capacity.trim() ? Number(capacity.trim()) : undefined;
     const result = validateEventForm({
       title: title.trim(),
       description: description.trim(),
       startDateTime,
       endDateTime,
       locationName: locationName.trim(),
-      capacity: capacity.trim() ? Number(capacity) : undefined,
+      capacity: parsedCapacityForValidation,
       imageUrl: imageUrl.trim() || undefined,
     });
 
+    const nextFieldErrors = {
+      endDateTime: result.errors.find((e) => e.field === 'endDateTime')?.message,
+      capacity: result.errors.find((e) => e.field === 'capacity')?.message,
+    };
+    setFieldErrors(nextFieldErrors);
+
     if (!result.isValid) {
-      setError('Veuillez corriger les erreurs ci-dessous.');
+      const messages = result.errors.map((e) => e.message).join('\n');
+      setError(messages || 'Veuillez corriger les erreurs ci-dessous.');
       return false;
     }
 
     setError(null);
+    setFieldErrors({});
     return true;
   }
 
@@ -116,6 +127,8 @@ export default function EventFormScreen() {
       return;
     }
 
+    const parsedCapacity = capacity.trim() ? parseInt(capacity.trim(), 10) : undefined;
+
     const payload = {
       title: title.trim(),
       description: description.trim(),
@@ -125,7 +138,7 @@ export default function EventFormScreen() {
       locationName: locationName.trim(),
       locationAddress: locationAddress.trim() || undefined,
       organizerName: organizerName.trim() || undefined,
-      capacity: capacity.trim() ? Number(capacity) : undefined,
+      capacity: parsedCapacity,
       imageUrl: imageUrl.trim() || undefined,
       tags: tags
         .split(',')
@@ -139,9 +152,12 @@ export default function EventFormScreen() {
       } else {
         createEvent(payload);
       }
-      Alert.alert('Enregistré', 'L&apos;événement a été sauvegardé avec succès.', [
-        { text: 'OK', onPress: () => router.replace('/admin') },
-      ]);
+      setSuccess(true);
+      setError(null);
+      // Auto-redirect after 1 second
+      setTimeout(() => {
+        router.replace('/admin');
+      }, 1000);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Impossible d\'enregistrer l\'événement.');
     }
@@ -160,19 +176,63 @@ export default function EventFormScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <SectionTitle title={eventId ? 'Modifier un événement' : 'Créer un événement'} subtitle="Les champs obligatoires doivent être remplis." />
 
+        {success ? <HelperText tone="success">✅ Événement sauvegardé avec succès ! Redirection...</HelperText> : null}
         {error ? <HelperText tone="error">{error}</HelperText> : null}
 
         <Card style={styles.card}>
           <AppInput value={title} onChangeText={setTitle} placeholder="Titre *" />
           <AppInput value={description} onChangeText={setDescription} placeholder="Description *" multiline style={styles.multiline} />
-          <AppInput value={startDateTime} onChangeText={setStartDateTime} placeholder="Début * (2026-05-30 14:00)" />
-          <AppInput value={endDateTime} onChangeText={setEndDateTime} placeholder="Fin optionnelle (2026-05-30 16:00)" />
+          {Platform.OS === 'web' ? (
+            <View>
+              <Text style={{ marginBottom: 6, color: '#9ca3af', fontSize: 12 }}>Début *</Text>
+              <input
+                type="datetime-local"
+                value={startDateTime ? (startDateTime.includes('T') ? startDateTime : startDateTime.replace(' ', 'T')) : ''}
+                onChange={(e: any) => setStartDateTime(e.target.value ? e.target.value.replace('T', ' ') : '')}
+                style={{ width: '100%', padding: 12, borderRadius: 12, backgroundColor: '#FFFFFF', color: '#111827', marginBottom: 8, borderWidth: 1, borderColor: '#E5E7EB' }}
+              />
+            </View>
+          ) : (
+            <AppInput value={startDateTime} onChangeText={setStartDateTime} placeholder="Début * (2026-05-30 14:00)" />
+          )}
+
+          {Platform.OS === 'web' ? (
+            <View>
+              <Text style={{ marginBottom: 6, color: '#9ca3af', fontSize: 12 }}>Fin (optionnelle)</Text>
+              <input
+                type="datetime-local"
+                value={endDateTime ? (endDateTime.includes('T') ? endDateTime : endDateTime.replace(' ', 'T')) : ''}
+                onChange={(e: any) => setEndDateTime(e.target.value ? e.target.value.replace('T', ' ') : '')}
+                style={{ width: '100%', padding: 12, borderRadius: 12, backgroundColor: '#FFFFFF', color: '#111827', marginBottom: 8, borderWidth: 1, borderColor: '#E5E7EB' }}
+              />
+            </View>
+          ) : (
+            <AppInput value={endDateTime} onChangeText={setEndDateTime} placeholder="Fin optionnelle (2026-05-30 16:00)" />
+          )}
+          {fieldErrors.endDateTime ? <HelperText tone="error">{fieldErrors.endDateTime}</HelperText> : null}
           <AppInput value={locationName} onChangeText={setLocationName} placeholder="Lieu *" />
           <AppInput value={locationAddress} onChangeText={setLocationAddress} placeholder="Adresse optionnelle" />
           <AppInput value={organizerName} onChangeText={setOrganizerName} placeholder="Organisateur optionnel" />
           <AppInput value={capacity} onChangeText={setCapacity} placeholder="Capacité optionnelle" keyboardType="number-pad" />
+          {fieldErrors.capacity ? <HelperText tone="error">{fieldErrors.capacity}</HelperText> : null}
           <AppInput value={imageUrl} onChangeText={setImageUrl} placeholder="Image URL optionnelle" autoCapitalize="none" />
           <AppInput value={tags} onChangeText={setTags} placeholder="Tags séparés par des virgules" />
+          {tags.trim() && (
+            <View style={styles.tagsPreview}>
+              <Text style={styles.tagsLabel}>Tags ({tags.split(',').filter((t) => t.trim()).length}):</Text>
+              <View style={styles.tagsPillRow}>
+                {tags
+                  .split(',')
+                  .map((t) => t.trim())
+                  .filter(Boolean)
+                  .map((tag, idx) => (
+                    <View key={idx} style={styles.tagChip}>
+                      <Text style={styles.tagChipText}>{tag}</Text>
+                    </View>
+                  ))}
+              </View>
+            </View>
+          )}
         </Card>
 
         <Card>
@@ -184,8 +244,8 @@ export default function EventFormScreen() {
           </View>
         </Card>
 
-        <AppButton title={eventId ? 'Mettre à jour' : 'Créer'} onPress={submit} />
-        <AppButton title="Retour" variant="secondary" onPress={() => router.back()} />
+        <AppButton title={eventId ? 'Mettre à jour' : 'Créer'} onPress={submit} disabled={success} />
+        <AppButton title="Retour" variant="secondary" onPress={() => router.back()} disabled={success} />
       </ScrollView>
     </Screen>
   );
@@ -213,5 +273,33 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
+  },
+  tagsPreview: {
+    gap: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+  },
+  tagsLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#6B7280',
+    textTransform: 'uppercase',
+  },
+  tagsPillRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  tagChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#4B5563',
+    borderRadius: 12,
+  },
+  tagChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#ffffff',
   },
 });

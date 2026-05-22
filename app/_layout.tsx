@@ -1,105 +1,77 @@
-import { Stack, useRootNavigationState, useRouter, useSegments } from 'expo-router';
+// app/_layout.tsx
+import { AuthProvider, useAuth } from '@/context/auth-context';
+import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import 'react-native-reanimated';
-
-import { AuthProvider, useAuth } from '@/context/auth-context';
 import { initDatabase } from '../database/init';
 
 export const unstable_settings = { anchor: 'index' };
 
+// Initialisation de la base de données
 let databaseInitError: unknown = null;
-
 try {
   initDatabase();
+  console.log('✅ Base de données initialisée');
 } catch (error) {
   databaseInitError = error;
-  console.error("Erreur lors de l'initialisation de la DB :", error);
+  console.error("❌ Erreur lors de l'initialisation de la DB:", error);
+}
+
+// Composant interne qui a accès au contexte d'authentification
+function RootLayoutContent() {
+  const { isAuthenticated } = useAuth();
+
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      {/* La clé change selon l'authentification pour forcer le remontage de l'écran index */}
+      <Stack.Screen name="index" key={isAuthenticated ? 'auth' : 'anon'} />
+      <Stack.Screen name="student" />
+      <Stack.Screen name="admin" />
+    </Stack>
+  );
 }
 
 export default function RootLayout() {
+  console.log('[RootLayout] render, databaseInitError:', databaseInitError);
+
   if (databaseInitError) {
     return (
       <View style={styles.errorContainer}>
         <Text style={styles.errorTitle}>Initialisation SQLite impossible</Text>
+        <Text style={styles.errorMessage}>
+          {databaseInitError instanceof Error ? databaseInitError.message : 'Erreur inconnue'}
+        </Text>
       </View>
     );
   }
 
   return (
     <AuthProvider>
-      <RootNavigator />
+      <RootLayoutContent />
       <StatusBar style="auto" />
     </AuthProvider>
   );
 }
 
-function RootNavigator() {
-  const { isAuthenticated, role, ready } = useAuth();
-  const segments = useSegments();
-  const router = useRouter();
-  
-  // On récupère l'état du routeur pour savoir s'il est prêt
-  const rootNavState = useRootNavigationState();
-
-  useEffect(() => {
-    console.log('[ROOT/nav:effect_triggered]', { ready, navKey: rootNavState?.key, seg0: segments[0], isAuthenticated, role });
-
-    // On bloque si l'Auth n'est pas prête ou si le routeur n'a pas sa clé
-    if (!ready || !rootNavState?.key) return;
-
-    const seg0 = segments[0];
-    const inTabsGroup = seg0 === '(tabs)';
-    const inAdminGroup = seg0 === 'admin';
-    const inProtectedArea = inTabsGroup || inAdminGroup;
-
-    const performNavigation = () => {
-      if (!isAuthenticated) {
-        if (inProtectedArea) {
-          router.replace('/');
-        }
-      } else {
-        if (!inProtectedArea) {
-          router.replace(role === 'admin' ? '/admin' : '/(tabs)');
-        } else if (role === 'student' && inAdminGroup) {
-          router.replace('/(tabs)');
-        } else if (role === 'admin' && inTabsGroup) {
-          router.replace('/admin');
-        }
-      }
-    };
-
-    if (segments.length <= 1 && segments[0] === undefined) {
-      const timer = setTimeout(performNavigation, 10);
-      return () => clearTimeout(timer);
-    }
-
-    performNavigation();
-  }, [isAuthenticated, role, ready, segments, rootNavState?.key]);
-
-  // ✅ On affiche TOUJOURS le Stack.
-  return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="index" />
-      <Stack.Screen name="(tabs)" />
-      <Stack.Screen name="admin" />
-    </Stack>
-  );
-}
-
 const styles = StyleSheet.create({
   errorContainer: {
-    flex: 1, 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    padding: 24, 
-    backgroundColor: '#ffffff'
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+    backgroundColor: '#ffffff',
   },
   errorTitle: {
-    fontSize: 20, 
-    fontWeight: '700', 
-    color: '#111827', 
-    textAlign: 'center'
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#111827',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  errorMessage: {
+    fontSize: 14,
+    color: '#5b6472',
+    textAlign: 'center',
   },
 });

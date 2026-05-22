@@ -1,33 +1,46 @@
-// app/(tabs)/_layout.tsx
-import { Tabs } from 'expo-router';
-import { Pressable, StyleSheet, Text } from 'react-native';
-
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { Redirect, Tabs } from 'expo-router';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-export default function TabLayout() {
+export default function StudentLayout() {
   const colorScheme = useColorScheme();
-  const { logout, role } = useAuth();
+  const { logout, role, userId, isAuthenticated, ready } = useAuth();
 
-  // ✅ PAS de garde ici. Pas de <Redirect>. Pas de useEffect de navigation.
-  // RootNavigator dans app/_layout.tsx garantit qu'on n'arrive ici
-  // que si isAuthenticated === true && role === 'student'.
+  const studentTabsKey = isAuthenticated
+    ? 'student:' + (role ?? 'none') + ':' + (userId ?? 'unknown')
+    : 'student:guest';
+
+  if (!ready) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+        <Text>Chargement...</Text>
+      </View>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Redirect href="/" />;
+  }
+
+  if (role === 'admin') {
+    return <Redirect href="/admin" />;
+  }
 
   return (
     <Tabs
+      key={studentTabsKey}
       screenOptions={{
-        sceneStyle: { backgroundColor: '#000000' },
+        sceneStyle: { backgroundColor: '#FFFFFF' },
         tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
         headerShown: true,
         tabBarButton: HapticTab,
         headerRight: () => (
-          // ✅ On appelle simplement logout(). RootNavigator gère la redirection.
           <Pressable
             onPress={() => {
-              console.log('[TABS/logout:btn_clicked]', { ts: Date.now(), role });
               logout();
             }}
             style={styles.logoutButton}
@@ -55,9 +68,7 @@ export default function TabLayout() {
         name="registrations"
         options={{
           title: 'Inscriptions',
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={24} name="checkmark.circle.fill" color={color} />
-          ),
+          tabBarIcon: ({ color }) => <IconSymbol size={24} name="checkmark.circle.fill" color={color} />,
         }}
       />
       <Tabs.Screen
@@ -71,9 +82,7 @@ export default function TabLayout() {
         name="profile"
         options={{
           title: 'Profil',
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={24} name="person.crop.circle" color={color} />
-          ),
+          tabBarIcon: ({ color }) => <IconSymbol size={24} name="person.crop.circle" color={color} />,
         }}
       />
       <Tabs.Screen name="event/[id]" options={{ href: null }} />

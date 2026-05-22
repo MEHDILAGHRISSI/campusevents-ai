@@ -1,29 +1,21 @@
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AppButton, Card, EmptyState, LoadingState, Screen, SectionTitle } from '@/components/ui-kit';
-import { Colors } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { database, mapRowToEvent } from '@/database/init';
-import { cancelRegistration } from '@/database/registrations';
+import { getEventById } from '@/database/events';
+import { listFavoriteEventIds, removeFavorite } from '@/database/favorites';
 import type { EventRecord } from '@/database/types';
 import { formatDayRange } from '@/utils/date';
 
-function loadRegisteredEvents(userId: string) {
-  const rows = database.getAllSync<Record<string, unknown>>(
-    `SELECT e.*
-     FROM events e
-     INNER JOIN registrations r ON r.eventId = e.id
-     WHERE r.userId = ? AND r.status = 'confirmed'
-     ORDER BY r.createdAt DESC;`,
-    [userId]
-  );
-
-  return rows.map((row) => mapRowToEvent(row));
+function loadFavoriteEvents(userId: string) {
+  const ids = listFavoriteEventIds(userId);
+  return ids.map((id) => getEventById(id)).filter(Boolean) as import('@/database/types').EventRecord[];
 }
 
-export default function RegistrationsScreen() {
+export default function FavoritesScreen() {
   const { userId, ready } = useAuth();
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,10 +38,10 @@ export default function RegistrationsScreen() {
         setLoading(true);
       }
 
-      setEvents(loadRegisteredEvents(userId));
+      setEvents(loadFavoriteEvents(userId));
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Impossible de charger les inscriptions.');
+      setError(cause instanceof Error ? cause.message : 'Impossible de charger les favoris.');
     } finally {
       setRefreshing(false);
       setLoading(false);
@@ -62,11 +54,11 @@ export default function RegistrationsScreen() {
     }, [refresh])
   );
 
-  const emptyMessage = useMemo(() => 'Vos événements inscrits apparaîtront ici après validation.', []);
+  const emptyMessage = useMemo(() => 'Ajoutez des événements depuis la fiche détail pour les retrouver ici.', []);
 
   if (!ready) {
     return (
-      <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
+      <View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
         <ActivityIndicator style={{ marginTop: 80 }} />
       </View>
     );
@@ -80,16 +72,16 @@ export default function RegistrationsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => refresh('pull')} />}>
-        <SectionTitle title="Mes inscriptions" subtitle={`${events.length} événement${events.length > 1 ? 's' : ''}`} />
+        <SectionTitle title="Favoris" subtitle={`${events.length} événement${events.length > 1 ? 's' : ''}`} />
 
-        {loading ? <LoadingState label="Chargement des inscriptions..." /> : null}
+        {loading ? <LoadingState label="Chargement des favoris..." /> : null}
         {!loading && error ? <EmptyState title="Erreur" subtitle={error} /> : null}
-        {!loading && !error && events.length === 0 ? <EmptyState title="Aucune inscription" subtitle={emptyMessage} /> : null}
+        {!loading && !error && events.length === 0 ? <EmptyState title="Aucun favori" subtitle={emptyMessage} /> : null}
 
         {!loading && !error
           ? events.map((event) => (
               <View key={event.id} style={styles.item}>
-                <Pressable onPress={() => router.push(`/(tabs)/event/${event.id}`)}>
+                <Pressable onPress={() => router.push(`/student/event/${event.id}`)}>
                   <Card style={styles.card}>
                     <View style={styles.header}>
                       <Text style={styles.title} numberOfLines={2}>
@@ -104,22 +96,26 @@ export default function RegistrationsScreen() {
                     </Text>
                   </Card>
                 </Pressable>
+
+                <View style={styles.badgeContainer} pointerEvents="none">
+                  <View style={styles.badge}><MaterialIcons name="favorite" size={14} color="#ffffff" /></View>
+                </View>
+
                 <View style={styles.actions}>
                   <AppButton
                     title="Voir les détails"
                     variant="secondary"
-                    onPress={() => router.push(`/(tabs)/event/${event.id}`)}
-                    style={styles.actionButton}
+                    onPress={() => router.push(`/student/event/${event.id}`)}
+                    style={[styles.actionButton, styles.ghostButton]}
                   />
                   <AppButton
-                    title="Annuler l'inscription"
-                    variant="danger"
+                    title="Retirer"
                     onPress={() => {
                       if (!userId) return;
-                      cancelRegistration(event.id, userId);
+                      removeFavorite(event.id, userId);
                       refresh();
                     }}
-                    style={styles.actionButton}
+                    style={[styles.actionButton, { backgroundColor: '#4B5563' }]}
                   />
                 </View>
               </View>
@@ -137,9 +133,20 @@ const styles = StyleSheet.create({
   },
   item: {
     gap: 10,
+    position: 'relative',
   },
   card: {
     gap: 10,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: 12,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
   },
   header: {
     flexDirection: 'row',
@@ -156,7 +163,7 @@ const styles = StyleSheet.create({
   category: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#0a7ea4',
+    color: '#4B5563',
   },
   meta: {
     fontSize: 13,
@@ -169,9 +176,28 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 12,
+    marginTop: 8,
   },
   actionButton: {
     flex: 1,
+  },
+  ghostButton: {
+    backgroundColor: '#F3F4F6',
+  },
+  badgeContainer: {
+    position: 'absolute',
+    right: 16,
+    top: 12,
+  },
+  badge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#4B5563',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
 });

@@ -126,3 +126,8 @@ export function updateWebState(updater: (state: WebDatabaseState) => void) {
   updater(state);
   writeState(state);
 }
+
+export function resetWebState() {
+  memoryState = buildInitialState();
+  writeState(memoryState);
+}

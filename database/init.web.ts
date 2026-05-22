@@ -1,3 +1,4 @@
+// database/init.web.ts
 import { categories, type EventCategory, type EventRecord } from './types';
 import { ensureWebState } from './web-store';
 
@@ -8,6 +9,14 @@ export function initDatabase() {
 export function isValidCategory(category: string): category is EventCategory {
   return categories.includes(category as EventCategory);
 }
+
+// Mock database for web platform - routes to web-store
+export const database = {
+  getAllSync: () => [],
+  getFirstSync: () => null,
+  runSync: () => {},
+  execSync: () => {},
+} as any;
 
 export function mapRowToEvent(row: Record<string, unknown>): EventRecord {
   return {

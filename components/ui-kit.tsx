@@ -38,8 +38,8 @@ export function Card({ children, style, ...props }: ViewProps) {
       style={[
         styles.card,
         {
-          backgroundColor: theme === 'dark' ? '#1e2226' : '#ffffff',
-          borderColor: theme === 'dark' ? '#2d3339' : '#e5e7eb',
+          backgroundColor: theme === 'dark' ? '#1e2226' : '#F9FAFB',
+          borderColor: theme === 'dark' ? '#2d3339' : '#E5E7EB',
         },
         style,
       ]}
@@ -66,7 +66,7 @@ export function Pill({
       style={[
         styles.pill,
         {
-          backgroundColor: active ? '#0a7ea4' : theme === 'dark' ? '#1f2933' : '#eef2f7',
+          backgroundColor: active ? '#4B5563' : theme === 'dark' ? '#1f2933' : '#F3F4F6',
         },
       ]}>
       <Text style={[styles.pillText, { color: active ? '#ffffff' : Colors[theme].text }]}>{label}</Text>
@@ -91,12 +91,12 @@ export function AppButton({
 
   const backgroundColor =
     variant === 'primary'
-      ? '#0a7ea4'
+      ? '#4B5563'
       : variant === 'danger'
-        ? '#b42318'
+        ? '#DC2626'
         : theme === 'dark'
           ? '#2d3339'
-          : '#edf2f7';
+          : '#F3F4F6';
 
   const color = variant === 'secondary' && theme !== 'dark' ? '#111827' : '#ffffff';
 
@@ -117,7 +117,7 @@ export function AppButton({
 export function AppInput(props: TextInputProps) {
   const theme = useColorScheme() ?? 'light';
 
-  return <TextInput {...props} style={[styles.input, { color: Colors[theme].text, borderColor: theme === 'dark' ? '#2d3339' : '#d1d5db' }, props.style]} placeholderTextColor={Colors[theme].icon} />;
+  return <TextInput {...props} style={[styles.input, { color: Colors[theme].text, borderColor: theme === 'dark' ? '#2d3339' : '#E5E7EB', backgroundColor: theme === 'dark' ? '#1e2226' : '#FFFFFF' }, props.style]} placeholderTextColor={theme === 'dark' ? Colors[theme].icon : '#9CA3AF'} />;
 }
 
 export function HelperText({ children, tone = 'neutral' }: { children: string; tone?: 'neutral' | 'success' | 'error' | 'warning' }) {
@@ -182,7 +182,7 @@ const styles = StyleSheet.create({
   },
   card: {
     borderWidth: 1,
-    borderRadius: 20,
+    borderRadius: 12,
     padding: 16,
     gap: 12,
   },
@@ -197,7 +197,7 @@ const styles = StyleSheet.create({
   },
   button: {
     minHeight: 44,
-    borderRadius: 14,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 16,
@@ -210,7 +210,7 @@ const styles = StyleSheet.create({
   input: {
     minHeight: 48,
     borderWidth: 1,
-    borderRadius: 14,
+    borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 15,

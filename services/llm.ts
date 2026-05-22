@@ -2,9 +2,9 @@ import { listEvents, listEventsInRange, listUpcomingEvents } from '@/database/ev
 import { listFavoriteEventIds } from '@/database/favorites';
 import { getCachedLlmResult, saveLlmResult } from '@/database/llmResults';
 import { listRegistrationsByUser } from '@/database/registrations';
-import { getLlmConfig } from '@/database/settings';
 import type { EventRecord } from '@/database/types';
 
+/** Core types */
 type AssistantType = 'search' | 'recommendation' | 'planning' | 'qa';
 
 type ChatMessage = {
@@ -12,13 +12,9 @@ type ChatMessage = {
   content: string;
 };
 
-type AssistantRequest = {
-  type: AssistantType;
-  userId: string;
-  inputText: string;
-  eventId?: string;
-  messages: ChatMessage[];
-};
+// Modèles ultra-performants et à jour en 2026
+const DEFAULT_MODEL = 'llama-3.3-70b-versatile'; 
+const FALLBACK_MODEL = 'llama-3.1-8b-instant';
 
 export type SearchAssistantResult = {
   matches: Array<{
@@ -45,6 +41,12 @@ export type PlanningAssistantResult = {
     slot: string;
     reason: string;
   }>;
+  conflicts: Array<{
+    eventId?: string;
+    title: string;
+    reason: string;
+    type: 'overlap' | 'constraint' | 'capacity' | 'past_event' | 'unknown';
+  }>;
 };
 
 export type QaAssistantResult = {
@@ -56,16 +58,45 @@ export type QaAssistantResult = {
   }>;
 };
 
-const enrichedStudentProfiles: Record<string, string> = {
-  'etudiant@campus.ma': 'Filiere: Master Informatique, 1ere annee. Centres d\'interet: IA appliquee, developpement web, design produit.',
-};
+/** Get Groq config from environment variables only */
+function getConfig() {
+  const apiKey = process.env.EXPO_PUBLIC_LLM_API_KEY || '';
+  const rawBaseUrl = process.env.EXPO_PUBLIC_LLM_BASE_URL || 'https://api.groq.com/openai/v1';
+  const baseUrl = rawBaseUrl.replace(/\/chat\/completions\/?$/i, '').replace(/\/$/, '');
 
-function truncateText(value: string, maxLength: number) {
-  if (value.length <= maxLength) {
-    return value;
+  console.log('[LLM] config', {
+    baseUrl,
+    model: DEFAULT_MODEL,
+    fallbackModel: FALLBACK_MODEL,
+    hasApiKey: Boolean(apiKey),
+  });
+
+  return { apiKey, baseUrl: baseUrl.replace(/\/$/, '') };
+}
+
+/** Safe JSON parse - never crashes the app */
+function safeJsonParse<T>(text: string): T | null {
+  try {
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    return JSON.parse(cleaned) as T;
+  } catch {
+    return null;
   }
+}
 
-  return `${value.slice(0, maxLength - 1)}…`;
+/** Extract JSON from response (handles markdown, etc.) */
+function extractJson(response: string): string | null {
+  const trimmed = response.trim();
+  const codeBlockMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (codeBlockMatch?.[1]) return codeBlockMatch[1].trim();
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) return trimmed;
+  const jsonMatch = trimmed.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+  return jsonMatch ? jsonMatch[0] : null;
+}
+
+/** Utility functions */
+function truncateText(value: string, maxLength: number) {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}…`;
 }
 
 function summarizeEvent(event: EventRecord) {
@@ -85,331 +116,367 @@ function summarizeEvent(event: EventRecord) {
   };
 }
 
-function buildPromptContext(events: EventRecord[], maxCharacters = 7000) {
-  return truncateText(JSON.stringify(events.map(summarizeEvent), null, 2), maxCharacters);
+function buildPromptContext(events: EventRecord[], includeTimestamp: boolean = false) {
+  const catalog = truncateText(JSON.stringify(events.map(summarizeEvent), null, 2), 7000);
+  if (!includeTimestamp) return catalog;
+  
+  const now = new Date().toISOString();
+  return `[CURRENT_TIME: ${now}]\n\n${catalog}`;
 }
 
-function stripMarkdownArtifacts(value: string) {
-  return value
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/__(.*?)__/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
-    .trim();
+function stripMarkdown(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\*\*(.*?)\*\*/g, '$1').replace(/__(.*?)__/g, '$1').replace(/`([^`]+)`/g, '$1').trim();
 }
 
-function normalizeRawJsonText(rawText: string) {
-  const trimmed = rawText.trim();
-  const withoutFence = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+type GroqApiError = Error & {
+  code?: string;
+  status?: number;
+};
 
-  if (withoutFence.startsWith('{') && withoutFence.endsWith('}')) {
-    return withoutFence;
+function isModelDecommissionedError(error: unknown) {
+  return Boolean(error && typeof error === 'object' && 'code' in error && (error as GroqApiError).code === 'model_decommissioned');
+}
+
+async function parseGroqError(response: Response): Promise<GroqApiError> {
+  const body = await response.text().catch(() => '');
+  const details = body ? ` - ${body.slice(0, 500)}` : '';
+  let code: string | undefined;
+
+  if (body) {
+    try {
+      const parsed = JSON.parse(body) as { error?: { code?: string; message?: string } };
+      code = parsed.error?.code;
+      if (parsed.error?.message) {
+        console.warn('[LLM] Groq error payload', { status: response.status, code, message: parsed.error.message });
+        return Object.assign(new Error(`[LLM] API error: ${response.status}${details}`), { code, status: response.status });
+      }
+    } catch {
+      // Keep the raw response details in the thrown error.
+    }
   }
 
-  const firstBrace = withoutFence.indexOf('{');
-  const lastBrace = withoutFence.lastIndexOf('}');
-
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return withoutFence.slice(firstBrace, lastBrace + 1);
-  }
-
-  throw new Error('Le modele a renvoye une reponse non JSON.');
+  return Object.assign(new Error(`[LLM] API error: ${response.status}${details}`), { code, status: response.status });
 }
 
-function extractJson<T>(rawText: string): T {
-  const normalized = normalizeRawJsonText(rawText);
-
-  try {
-    return JSON.parse(normalized) as T;
-  } catch {
-    throw new Error('Le modele a renvoye une reponse non JSON.');
-  }
-}
-
-function asString(value: unknown) {
-  return typeof value === 'string' ? stripMarkdownArtifacts(value) : '';
-}
-
-function parseSearchResult(rawText: string): SearchAssistantResult {
-  const parsed = extractJson<{ matches?: Array<Record<string, unknown>> }>(rawText);
-  const sourceMatches = Array.isArray(parsed.matches) ? parsed.matches : [];
-
-  return {
-    matches: sourceMatches
-      .map((match) => {
-        const eventId = asString(match.eventId);
-        const title = asString(match.title);
-        const reason = asString(match.reason);
-        const confidenceValue = Number(match.confidence ?? 0);
-        const confidence = Number.isFinite(confidenceValue) ? Math.min(1, Math.max(0, confidenceValue)) : 0;
-
-        if (!eventId || !title || !reason) {
-          return null;
-        }
-
-        return {
-          eventId,
-          title,
-          reason,
-          confidence,
-        };
-      })
-      .filter((match): match is NonNullable<typeof match> => Boolean(match)),
-  };
-}
-
-function parseRecommendationResult(rawText: string): RecommendationAssistantResult {
-  const parsed = extractJson<{ suggestions?: Array<Record<string, unknown>> }>(rawText);
-  const sourceSuggestions = Array.isArray(parsed.suggestions) ? parsed.suggestions : [];
-
-  return {
-    suggestions: sourceSuggestions
-      .map((suggestion) => {
-        const eventId = asString(suggestion.eventId);
-        const title = asString(suggestion.title);
-        const reason = asString(suggestion.reason);
-
-        if (!eventId || !title || !reason) {
-          return null;
-        }
-
-        return {
-          eventId,
-          title,
-          reason,
-        };
-      })
-      .filter((suggestion): suggestion is NonNullable<typeof suggestion> => Boolean(suggestion)),
-  };
-}
-
-function parsePlanningResult(rawText: string): PlanningAssistantResult {
-  const parsed = extractJson<{ plan?: Array<Record<string, unknown>> }>(rawText);
-  const sourcePlan = Array.isArray(parsed.plan) ? parsed.plan : [];
-
-  return {
-    plan: sourcePlan
-      .map((entry) => {
-        const day = asString(entry.day);
-        const eventId = asString(entry.eventId);
-        const title = asString(entry.title);
-        const slot = asString(entry.slot);
-        const reason = asString(entry.reason);
-
-        if (!day || !eventId || !title || !slot || !reason) {
-          return null;
-        }
-
-        return {
-          day,
-          eventId,
-          title,
-          slot,
-          reason,
-        };
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)),
-  };
-}
-
-function parseQaResult(rawText: string): QaAssistantResult {
-  const parsed = extractJson<{ answer?: unknown; references?: Array<Record<string, unknown>> }>(rawText);
-  const sourceReferences = Array.isArray(parsed.references) ? parsed.references : [];
-
-  return {
-    answer: asString(parsed.answer),
-    references: sourceReferences
-      .map((reference) => {
-        const eventId = asString(reference.eventId);
-        const title = asString(reference.title);
-        const reason = asString(reference.reason);
-
-        if (!eventId || !title || !reason) {
-          return null;
-        }
-
-        return {
-          eventId,
-          title,
-          reason,
-        };
-      })
-      .filter((reference): reference is NonNullable<typeof reference> => Boolean(reference)),
-  };
-}
-
-function getEnrichedStudentProfile(userId: string) {
-  return (
-    enrichedStudentProfiles[userId] ??
-    'Profil etudiant non renseigne: proposer des recommandations polyvalentes orientees apprentissage et vie de campus.'
-  );
-}
-
-async function callAssistantModel({ messages }: AssistantRequest) {
-  const config = getLlmConfig();
+async function postGroqChat(messages: ChatMessage[], model: string): Promise<string> {
+  const config = getConfig();
 
   if (!config.apiKey) {
-    throw new Error("Aucune clé API n'est configurée dans les paramètres de l'assistant.");
+    throw new Error('[LLM] API key not configured (EXPO_PUBLIC_LLM_API_KEY)');
   }
 
-  const baseUrl = config.baseUrl.replace(/\/$/, '');
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  console.log('[LLM] request start', {
+    model,
+    baseUrl: config.baseUrl,
+    messageCount: messages.length,
+  });
+
+  const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${config.apiKey}`,
     },
     body: JSON.stringify({
-      model: config.model,
+      model,
       temperature: 0.2,
       messages,
-      response_format: { type: 'json_object' },
     }),
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Erreur API ${response.status}: ${truncateText(errorBody, 200)}`);
+    throw await parseGroqError(response);
   }
 
-  const payload = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
+  console.log('[LLM] response ok', { model, status: response.status });
 
-  const content = payload.choices?.[0]?.message?.content;
+  const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const content = payload.choices?.[0]?.message?.content ?? '';
 
-  if (!content) {
-    throw new Error('Réponse vide du fournisseur LLM.');
+  if (!content.trim()) {
+    throw new Error('[LLM] Empty response received from Groq');
   }
 
   return content;
 }
 
-function buildSearchMessages(inputText: string, catalogJson: string): ChatMessage[] {
+async function postGroqChatWithFallback(messages: ChatMessage[]): Promise<string> {
+  try {
+    return await postGroqChat(messages, DEFAULT_MODEL);
+  } catch (error) {
+    if (isModelDecommissionedError(error)) {
+      console.warn(`[LLM] ${DEFAULT_MODEL} decommissioned, retrying with ${FALLBACK_MODEL}`);
+      return postGroqChat(messages, FALLBACK_MODEL);
+    }
+
+    throw error;
+  }
+}
+
+/** Core LLM function - simple prompt-to-response */
+export async function callLLM(prompt: string): Promise<string> {
+  const now = new Date().toISOString();
+  const messages: ChatMessage[] = [
+    { role: 'system', content: `[CURRENT_TIME: ${now}]\n\nYou are a helpful assistant. Respond clearly and concisely.` },
+    { role: 'user', content: prompt },
+  ];
+
+  try {
+    console.log('[LLM] callLLM start', { promptLength: prompt.length });
+    const response = await postGroqChatWithFallback(messages);
+    return stripMarkdown(response);
+  } catch (error) {
+    console.warn('[LLM] Network error:', error instanceof Error ? error.message : String(error));
+    return '';
+  }
+}
+
+/** Parse search result */
+function parseSearchResult(rawText: string): SearchAssistantResult {
+  const jsonStr = extractJson(rawText);
+  if (!jsonStr) return { matches: [] };
+  
+  const parsed = safeJsonParse<{ matches?: Array<Record<string, unknown>> }>(jsonStr);
+  if (!parsed?.matches) return { matches: [] };
+
+  return {
+    matches: parsed.matches
+      .map((m) => {
+        const eventId = stripMarkdown(m.eventId);
+        const title = stripMarkdown(m.title);
+        const reason = stripMarkdown(m.reason);
+        const confidence = Math.min(1, Math.max(0, Number(m.confidence ?? 0)));
+        return eventId && title && reason ? { eventId, title, reason, confidence } : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => !!x),
+  };
+}
+
+/** Parse recommendation result */
+function parseRecommendationResult(rawText: string): RecommendationAssistantResult {
+  const jsonStr = extractJson(rawText);
+  if (!jsonStr) return { suggestions: [] };
+
+  const parsed = safeJsonParse<{ suggestions?: Array<Record<string, unknown>> }>(jsonStr);
+  if (!parsed?.suggestions) return { suggestions: [] };
+
+  return {
+    suggestions: parsed.suggestions
+      .map((s) => {
+        const eventId = stripMarkdown(s.eventId);
+        const title = stripMarkdown(s.title);
+        const reason = stripMarkdown(s.reason);
+        return eventId && title && reason ? { eventId, title, reason } : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => !!x),
+  };
+}
+
+/** Parse planning result */
+function parsePlanningResult(rawText: string): PlanningAssistantResult {
+  const jsonStr = extractJson(rawText);
+  if (!jsonStr) return { plan: [], conflicts: [] };
+
+  const parsed = safeJsonParse<{ plan?: Array<Record<string, unknown>>; conflicts?: Array<Record<string, unknown>> }>(jsonStr);
+  if (!parsed) return { plan: [], conflicts: [] };
+
+  const sourcePlan = Array.isArray(parsed.plan) ? parsed.plan : [];
+  const sourceConflicts = Array.isArray(parsed.conflicts) ? parsed.conflicts : [];
+
+  return {
+    plan: sourcePlan
+      .map((p) => {
+        const day = stripMarkdown(p.day);
+        const eventId = stripMarkdown(p.eventId);
+        const title = stripMarkdown(p.title);
+        const slot = stripMarkdown(p.slot);
+        const reason = stripMarkdown(p.reason);
+        return day && eventId && title && slot && reason ? { day, eventId, title, slot, reason } : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => !!x),
+    conflicts: sourceConflicts
+      .map((c) => {
+        const title = stripMarkdown(c.title);
+        const reason = stripMarkdown(c.reason);
+        const eventId = stripMarkdown(c.eventId) || undefined;
+        const type = stripMarkdown(c.type) as any;
+        return title && reason ? {
+          eventId,
+          title,
+          reason,
+          type: ['overlap', 'constraint', 'capacity', 'past_event'].includes(type) ? type : 'unknown',
+        } : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => !!x),
+  };
+}
+
+/** Parse Q&A result */
+function parseQaResult(rawText: string): QaAssistantResult {
+  const jsonStr = extractJson(rawText);
+  if (!jsonStr) return { answer: rawText || '', references: [] };
+
+  const parsed = safeJsonParse<{ answer?: unknown; references?: Array<Record<string, unknown>> }>(jsonStr);
+  if (!parsed) return { answer: rawText || '', references: [] };
+
+  const sourceReferences = Array.isArray(parsed.references) ? parsed.references : [];
+  return {
+    answer: stripMarkdown(parsed.answer),
+    references: sourceReferences
+      .map((r) => {
+        const eventId = stripMarkdown(r.eventId);
+        const title = stripMarkdown(r.title);
+        const reason = stripMarkdown(r.reason);
+        return eventId && title && reason ? { eventId, title, reason } : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => !!x),
+  };
+}
+
+/** Build prompt messages */
+function buildSearchMessages(query: string, catalog: string): ChatMessage[] {
+  const now = new Date().toISOString();
   return [
     {
       role: 'system',
-      content:
-        "Tu es CampusEvents AI Search. Analyse un catalogue d'événements et retourne uniquement du JSON valide. Réponds avec {\"matches\":[{\"eventId\",\"title\",\"reason\",\"confidence\"}]}. Choisis jusqu'à 5 événements pertinents. Chaque reason doit être courte et concrète.",
+      content: `[CURRENT_TIME: ${now}]\n\nTu es CampusEvents AI Search. Analyse un catalogue et retourne du JSON avec {"matches":[{"eventId","title","reason","confidence"}]}. Choisis jusqu'à 5 événements pertinents.`,
     },
     {
       role: 'user',
-      content: `REQUETE_UTILISATEUR:\n${inputText}\n\nCATALOGUE_JSON:\n${catalogJson}\n\nCONTRAINTES:\n- N'inventez pas d'événements\n- Utilisez les ids fournis\n- Retour JSON uniquement`,
+      content: `REQUETE: ${query}\n\nCATALOGUE:\n${catalog}\n\nRetour JSON uniquement`,
     },
   ];
 }
 
-function buildRecommendationMessages(inputText: string, catalogJson: string) {
+function buildRecommendationMessages(profile: string, catalog: string): ChatMessage[] {
+  const now = new Date().toISOString();
   return [
     {
       role: 'system',
-      content:
-        "Tu es CampusEvents AI Recommendation. À partir de l'historique et du catalogue à venir, propose 3 événements pertinents. Retourne uniquement du JSON valide au format {\"suggestions\":[{\"eventId\",\"title\",\"reason\"}]}.",
+      content: `[CURRENT_TIME: ${now}]\n\nTu es CampusEvents AI Recommendation. Propose 3 événements pertinents. Retourne {"suggestions":[{"eventId","title","reason"}]}.`,
     },
     {
       role: 'user',
-      content: `PROFIL_ET_HISTORIQUE:\n${inputText}\n\nCATALOGUE_A_VENIR_JSON:\n${catalogJson}\n\nCONTRAINTES:\n- Utilise seulement des événements à venir\n- N'utilise que les ids fournis\n- Retour JSON uniquement`,
+      content: `PROFIL:\n${profile}\n\nCATALOGUE:\n${catalog}\n\nRetour JSON uniquement`,
     },
   ];
 }
 
-function buildPlanningMessages(inputText: string, catalogJson: string) {
+function buildPlanningMessages(constraints: string, catalog: string): ChatMessage[] {
+  const now = new Date().toISOString();
   return [
     {
       role: 'system',
-      content:
-        "Tu es CampusEvents AI Planning. Construis un planning sans conflit à partir des contraintes horaires et des événements de la semaine. Retourne uniquement du JSON valide au format {\"plan\":[{\"day\",\"eventId\",\"title\",\"slot\",\"reason\"}]}.",
+      content: `[CURRENT_TIME: ${now}]\n\nTu es CampusEvents AI Planning. Construis un planning sans conflit. Retourne {"plan":[{"day","eventId","title","slot","reason"}],"conflicts":[{"eventId","title","reason","type"}]}.\n\n⚠️ INSTRUCTION STRICTE : Tu ne dois JAMAIS modifier la date, l'heure ou le lieu d'un événement existant. Si un événement ne rentre pas dans le planning à cause d'une contrainte, liste-le impérativement dans la section \"conflicts\" au lieu de le déplacer.`,
     },
     {
       role: 'user',
-      content: `CONTRAINTES:\n${inputText}\n\nEVENEMENTS_DE_LA_SEMAINE_JSON:\n${catalogJson}\n\nCONTRAINTES_DE_SORTIE:\n- Évite les conflits horaires\n- Si aucun événement ne convient, retourne un tableau vide\n- Retour JSON uniquement`,
+      content: `CONTRAINTES:\n${constraints}\n\nEVENEMENTS:\n${catalog}\n\nRetour JSON uniquement`,
     },
   ];
 }
 
-function buildQaMessages(inputText: string, catalogJson: string) {
+function buildQaMessages(question: string, catalog: string): ChatMessage[] {
+  const now = new Date().toISOString();
   return [
     {
       role: 'system',
-      content:
-        "Tu es CampusEvents AI QA. Réponds à des questions transversales sur l'ensemble du catalogue. Retourne uniquement du JSON valide au format {\"answer\":\"...\",\"references\":[{\"eventId\",\"title\",\"reason\"}]}.",
+      content: `[CURRENT_TIME: ${now}]\n\nTu es CampusEvents AI QA. Réponds à des questions. Retourne {"answer":"...","references":[{"eventId","title","reason"}]}.`,
     },
     {
       role: 'user',
-      content: `QUESTION:\n${inputText}\n\nCATALOGUE_JSON:\n${catalogJson}\n\nCONTRAINTES:\n- Cite les événements pertinents si utile\n- N'invente pas de données\n- Retour JSON uniquement`,
+      content: `QUESTION:\n${question}\n\nCATALOGUE:\n${catalog}\n\nRetour JSON uniquement`,
     },
   ];
 }
 
-async function runAssistant<T>(request: AssistantRequest, cacheInput: string, parseResult: (rawText: string) => T) {
-  const cached = getCachedLlmResult(request.type, request.userId, cacheInput);
+/** Call assistant model with Groq API */
+async function callAssistantModel(messages: ChatMessage[]): Promise<string> {
+  try {
+    return await postGroqChatWithFallback(messages);
+  } catch (error) {
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+/** Run assistant with caching */
+async function runAssistant<T>(
+  type: AssistantType,
+  userId: string,
+  inputText: string,
+  messages: ChatMessage[],
+  parser: (raw: string) => T
+): Promise<T> {
+  const cacheKey = JSON.stringify({ type, inputText, messages });
+  const cached = getCachedLlmResult(type, userId, cacheKey);
 
   if (cached) {
-    return parseResult(cached);
+    console.log('[LLM] cache hit', { type, userId, inputLength: inputText.length });
+    return parser(cached);
   }
 
-  const rawOutput = await callAssistantModel(request);
-  saveLlmResult({
-    eventId: request.eventId,
-    userId: request.userId,
-    type: request.type,
-    inputText: cacheInput,
-    outputText: rawOutput,
-  });
+  console.log('[LLM] cache miss', { type, userId, inputLength: inputText.length });
 
-  return parseResult(rawOutput);
+  const result = await callAssistantModel(messages);
+  if (result.trim()) {
+    saveLlmResult({ userId, type, inputText: cacheKey, outputText: result });
+    console.log('[LLM] result saved', { type, userId, outputLength: result.length });
+  }
+
+  return parser(result);
 }
 
-function buildCacheInput(request: AssistantRequest) {
-  return JSON.stringify(
-    {
-      type: request.type,
-      inputText: request.inputText,
-      messages: request.messages,
-    },
-    null,
-    2
-  );
+
+/** Search events with semantic query */
+export async function searchEvents(userId: string, query: string): Promise<SearchAssistantResult> {
+  const catalog = buildPromptContext(listEvents());
+  const messages = buildSearchMessages(query, catalog);
+  return runAssistant('search', userId, query, messages, parseSearchResult);
 }
 
-export async function runSearchAssistant(userId: string, inputText: string) {
-  const catalog = buildPromptContext(listEvents(), 7000);
-  const messages = buildSearchMessages(inputText, catalog);
-  const request = { type: 'search', userId, inputText, messages };
-  return runAssistant<SearchAssistantResult>(request, buildCacheInput(request), parseSearchResult);
-}
-
-export async function runRecommendationAssistant(userId: string) {
+/** Get personalized recommendations */
+export async function getRecommendations(userId: string): Promise<RecommendationAssistantResult> {
   const favorites = listFavoriteEventIds(userId);
   const registrations = listRegistrationsByUser(userId);
-  const studentProfile = getEnrichedStudentProfile(userId);
-  const history = {
-    studentProfile,
-    favorites,
-    registrations: registrations.map((registration) => registration.eventId),
-  };
-  const catalog = buildPromptContext(listUpcomingEvents(), 7000);
-  const inputText = JSON.stringify(history, null, 2);
-  const messages = buildRecommendationMessages(inputText, catalog);
-
-  const request = { type: 'recommendation', userId, inputText, messages };
-  return runAssistant<RecommendationAssistantResult>(request, buildCacheInput(request), parseRecommendationResult);
+  const profile = JSON.stringify({ favorites, registrations: registrations.map((r) => r.eventId) }, null, 2);
+  const catalog = buildPromptContext(listUpcomingEvents());
+  const messages = buildRecommendationMessages(profile, catalog);
+  return runAssistant('recommendation', userId, profile, messages, parseRecommendationResult);
 }
 
-export async function runPlanningAssistant(userId: string, inputText: string) {
+/** Generate schedule with conflict detection */
+export async function generateSchedule(userId: string, constraints: string): Promise<PlanningAssistantResult> {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   const end = new Date(start);
   end.setDate(end.getDate() + 7);
-
-  const catalog = buildPromptContext(listEventsInRange(start.toISOString(), end.toISOString()), 7000);
-  const messages = buildPlanningMessages(inputText, catalog);
-  const request = { type: 'planning', userId, inputText, messages };
-  return runAssistant<PlanningAssistantResult>(request, buildCacheInput(request), parsePlanningResult);
+  const catalog = buildPromptContext(listEventsInRange(start.toISOString(), end.toISOString()));
+  const messages = buildPlanningMessages(constraints, catalog);
+  return runAssistant('planning', userId, constraints, messages, parsePlanningResult);
 }
 
-export async function runQaAssistant(userId: string, inputText: string) {
-  const catalog = buildPromptContext(listEvents(), 7000);
-  const messages = buildQaMessages(inputText, catalog);
-  const request = { type: 'qa', userId, inputText, messages };
-  return runAssistant<QaAssistantResult>(request, buildCacheInput(request), parseQaResult);
+/** Ask questions about event catalog */
+export async function askAboutEvents(userId: string, question: string): Promise<QaAssistantResult> {
+  const catalog = buildPromptContext(listEvents());
+  const messages = buildQaMessages(question, catalog);
+  return runAssistant('qa', userId, question, messages, parseQaResult);
 }
+
+/** Backward compatibility aliases */
+export async function runSearchAssistant(userId: string, query: string) {
+  return searchEvents(userId, query);
+}
+
+export async function runRecommendationAssistant(userId: string) {
+  return getRecommendations(userId);
+}
+
+export async function runPlanningAssistant(userId: string, constraints: string) {
+  return generateSchedule(userId, constraints);
+}
+
+export async function runQaAssistant(userId: string, question: string) {
+  return askAboutEvents(userId, question);
+}
+//fin llm.ts

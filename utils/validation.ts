@@ -51,7 +51,8 @@ const validators = {
   },
 
   isoDateTime: (value: string, fieldName: string): ValidationError | null => {
-    const date = new Date(value);
+    const normalized = typeof value === 'string' && value.includes(' ') && !value.includes('T') ? value.replace(' ', 'T') : value;
+    const date = new Date(normalized as string);
     if (isNaN(date.getTime())) {
       return { field: fieldName, message: `${fieldName} must be a valid date` };
     }
@@ -59,7 +60,8 @@ const validators = {
   },
 
   futureDate: (value: string, fieldName: string): ValidationError | null => {
-    const date = new Date(value);
+    const normalized = typeof value === 'string' && value.includes(' ') && !value.includes('T') ? value.replace(' ', 'T') : value;
+    const date = new Date(normalized as string);
     if (date <= new Date()) {
       return { field: fieldName, message: `${fieldName} must be in the future` };
     }
@@ -113,14 +115,35 @@ export const eventValidationRules = {
   ],
   capacity: [
     (v: number | undefined) => {
-      if (!v) return null;
-      return validators.positiveNumber(v, 'Capacity');
+      if (v === undefined || v === null) return null;
+      if (!Number.isInteger(v) || v <= 0) {
+        return {
+          field: 'capacity',
+          message: 'La capacité doit être un nombre entier positif supérieur à 0',
+        };
+      }
+      return null;
     },
   ],
   imageUrl: [
     (v: string | undefined) => {
       if (!v) return null;
       return validators.url(v, 'Image URL');
+    },
+  ],
+  tags: [
+    (v: string | undefined) => {
+      if (!v) return null;
+      const tags = v.split(',').map((t) => t.trim()).filter(Boolean);
+      if (tags.length > 20) {
+        return { field: 'Tags', message: 'Maximum 20 tags allowed' };
+      }
+      for (const tag of tags) {
+        if (tag.length > 50) {
+          return { field: 'Tags', message: 'Each tag must be 50 characters or less' };
+        }
+      }
+      return null;
     },
   ],
 };
@@ -161,6 +184,26 @@ export function validateEventForm(formData: {
     const error = validateField(fieldName as keyof typeof eventValidationRules, value);
     if (error) {
       errors.push(error);
+    }
+  }
+
+  if (formData.endDateTime) {
+    const start = new Date(
+      typeof formData.startDateTime === 'string' && formData.startDateTime.includes(' ') && !formData.startDateTime.includes('T')
+        ? formData.startDateTime.replace(' ', 'T')
+        : formData.startDateTime
+    );
+    const end = new Date(
+      typeof formData.endDateTime === 'string' && formData.endDateTime.includes(' ') && !formData.endDateTime.includes('T')
+        ? formData.endDateTime.replace(' ', 'T')
+        : formData.endDateTime
+    );
+
+    if (!isNaN(start.getTime()) && !isNaN(end.getTime()) && end.getTime() <= start.getTime()) {
+      errors.push({
+        field: 'endDateTime',
+        message: 'La date de fin doit être strictement postérieure à la date de début',
+      });
     }
   }
 

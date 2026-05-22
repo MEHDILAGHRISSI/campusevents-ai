@@ -1,3 +1,4 @@
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -62,8 +63,6 @@ export default function StudentEventsScreen() {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<'Tous' | EventCategory>('Tous');
   const [period, setPeriod] = useState<PeriodFilter>('upcoming');
-  
-  // ✅ FIX: On récupère ready et userId
   const { ready, userId } = useAuth();
 
   const refresh = useCallback(
@@ -97,12 +96,12 @@ export default function StudentEventsScreen() {
     setPeriod(next);
   }, []);
 
-  const openEventDetails = useCallback((id: string) => { router.push(`/(tabs)/event/${id}`); }, [router]);
+  const openEventDetails = useCallback((id: string) => { router.push(`/student/event/${id}`); }, [router]);
 
   if (!ready) {
     return (
-      <View style={{ flex: 1, backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color="#f59e0b" />
+      <View style={{ flex: 1, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" color="#4B5563" />
       </View>
     );
   }
@@ -158,7 +157,10 @@ export default function StudentEventsScreen() {
                     <Text style={styles.eventTitle} numberOfLines={2}>{event.title}</Text>
                     <Text style={styles.eventCategory}>{event.category}</Text>
                   </View>
-                  <Text style={styles.eventMeta}>{formatDayRange(event.startDateTime, event.endDateTime)}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <MaterialIcons name="calendar-today" size={16} color="#6B7280" />
+                    <Text style={styles.eventMeta}>{formatDayRange(event.startDateTime, event.endDateTime)}</Text>
+                  </View>
                   <Text style={styles.eventMeta}>{event.locationName}</Text>
                   <Text style={styles.eventDescription} numberOfLines={3}>{event.description}</Text>
                   <View style={styles.tagRow}>
@@ -168,7 +170,7 @@ export default function StudentEventsScreen() {
                       </View>
                     ))}
                   </View>
-                  <AppButton title="Voir les détails" variant="secondary" onPress={() => openEventDetails(event.id)} style={styles.detailsButton} />
+                  <AppButton title="Voir les détails" onPress={() => openEventDetails(event.id)} style={styles.detailsButton} />
                 </Card>
               </View>
             ))
@@ -179,22 +181,22 @@ export default function StudentEventsScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { backgroundColor: '#000000' },
-  content: { paddingBottom: 28, gap: 14 },
-  debugBanner: { borderRadius: 24, backgroundColor: '#050505', borderWidth: 1, borderColor: '#2f2f2f', padding: 18, gap: 4 },
-  debugBannerLabel: { fontSize: 12, fontWeight: '800', letterSpacing: 1.6, color: '#7dd3fc', textTransform: 'uppercase' },
-  debugBannerTitle: { fontSize: 24, lineHeight: 28, fontWeight: '800', color: '#ffffff' },
-  debugBannerSubtitle: { fontSize: 13, color: '#d1d5db' },
-  filterCard: { backgroundColor: '#0b0b0b', borderColor: '#2d2d2d' },
+  screen: { backgroundColor: '#FFFFFF' },
+  content: { paddingBottom: 28, gap: 14, paddingHorizontal: 16 },
+  debugBanner: { borderRadius: 16, backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', padding: 14, gap: 4 },
+  debugBannerLabel: { fontSize: 12, fontWeight: '800', letterSpacing: 1.2, color: '#4B5563', textTransform: 'uppercase' },
+  debugBannerTitle: { fontSize: 20, lineHeight: 24, fontWeight: '800', color: '#111827' },
+  debugBannerSubtitle: { fontSize: 13, color: '#6B7280' },
+  filterCard: { backgroundColor: '#F9FAFB', borderColor: '#E5E7EB', borderRadius: 12, padding: 12 },
   pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  eventCard: { gap: 10, backgroundColor: '#111111', borderColor: '#2b2b2b' },
-  detailsButton: { alignSelf: 'stretch', backgroundColor: '#f59e0b' },
+  eventCard: { gap: 10, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB', padding: 12, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 4 },
+  detailsButton: { alignSelf: 'center', backgroundColor: '#4B5563', paddingHorizontal: 18, borderRadius: 10, minHeight: 40 },
   eventHeader: { flexDirection: 'row', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' },
-  eventTitle: { flex: 1, fontSize: 18, fontWeight: '700', color: '#ffffff' },
-  eventCategory: { fontSize: 12, fontWeight: '700', color: '#7dd3fc', textTransform: 'uppercase' },
-  eventMeta: { fontSize: 13, color: '#cbd5e1' },
-  eventDescription: { fontSize: 14, lineHeight: 20, color: '#f3f4f6' },
+  eventTitle: { flex: 1, fontSize: 18, fontWeight: '700', color: '#111827' },
+  eventCategory: { fontSize: 12, fontWeight: '700', color: '#4B5563', textTransform: 'uppercase' },
+  eventMeta: { fontSize: 13, color: '#6B7280' },
+  eventDescription: { fontSize: 14, lineHeight: 20, color: '#374151' },
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  tagChip: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#1f2937' },
-  tagText: { fontSize: 12, fontWeight: '600', color: '#7dd3fc' },
+  tagChip: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#F3F4F6' },
+  tagText: { fontSize: 12, fontWeight: '600', color: '#4B5563' },
 });
